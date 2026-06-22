@@ -1,6 +1,14 @@
-.vs
+.vs/
 .vs/*
-bin
+bin/
 bin/*
-obj
+obj/
 obj/*
+publish/
+*.user
+*.suo
+config.json
+games.txt
+chat_log.txt
+Thumbs.db
+.DS_Store

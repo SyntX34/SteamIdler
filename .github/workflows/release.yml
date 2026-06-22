@@ -1,0 +1,85 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"          
+  workflow_dispatch:       
+
+permissions:
+  contents: write          
+
+jobs:
+  build:
+    name: Build CLI + GUI
+    runs-on: windows-latest   
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore SteamIdler.sln
+
+      - name: Publish CLI
+        run: |
+          dotnet publish SteamIdler/CLI/SteamIdler.csproj `
+          -c Release `
+          -r win-x64 `
+          --self-contained true `
+          -p:PublishSingleFile=true `
+          -p:EnableCompressionInSingleFile=true `
+          -p:DebugType=None `
+          -p:DebugSymbols=false `
+          -o publish/CLI
+
+      - name: Publish GUI
+        run: |
+          dotnet publish SteamIdler/GUI/SteamIdlerGUI.csproj `
+          -c Release `
+          -r win-x64 `
+          --self-contained true `
+          -p:PublishSingleFile=true `
+          -p:EnableCompressionInSingleFile=true `
+          -p:DebugType=None `
+          -p:DebugSymbols=false `
+          -o publish/GUI
+
+      - name: Rename outputs
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"   # e.g. v2.1.0
+
+          Rename-Item "publish/CLI/SteamIdler.exe"    "SteamIdler-CLI-$tag.exe"
+          Rename-Item "publish/GUI/SteamIdlerGUI.exe" "SteamIdler-GUI-$tag.exe"
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Steam Idler ${{ github.ref_name }}"
+          tag_name: ${{ github.ref_name }}
+          body: |
+            ## Steam Idler ${{ github.ref_name }}
+
+            | File | Description |
+            |------|-------------|
+            | `SteamIdler-CLI-*.exe` | Console version — lightweight, no UI |
+            | `SteamIdler-GUI-*.exe` | WinForms GUI — dashboard, friends, chat |
+
+            - Both `.exe` files are **self-contained** — no .NET install needed
+            - Drop the exe in a folder, add `config.json` and `games.txt`, run
+
+            1. Run the exe once — it creates `config.json` and `games.txt`
+            2. Fill in your Steam credentials in `config.json`
+            3. Add AppIDs to `games.txt`
+            4. Run again — session token is saved, no auth code needed after that (~30 days)
+
+          draft: false
+          prerelease: false
+          files: |
+            publish/CLI/SteamIdler-CLI-${{ github.ref_name }}.exe
+            publish/GUI/SteamIdler-GUI-${{ github.ref_name }}.exe

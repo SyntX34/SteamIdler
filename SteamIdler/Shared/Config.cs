@@ -1,18 +1,25 @@
 using Newtonsoft.Json;
-namespace SteamGameIdler;
+
+namespace SteamGameIdler.Shared;
+
 public class AppConfig
 {
     [JsonProperty("username")]
     public string Username { get; set; } = "";
+
     [JsonProperty("password")]
     public string Password { get; set; } = "";
+
     [JsonProperty("refresh_token")]
     public string RefreshToken { get; set; } = "";
+
     [JsonProperty("auto_reply_message")]
     public string AutoReplyMessage { get; set; } =
         "Hey! I'm currently idling Steam games and can't chat right now. I'll get back to you later!";
+
     [JsonProperty("auto_reply_enabled")]
     public bool AutoReplyEnabled { get; set; } = true;
+
     private static readonly string _path = "config.json";
 
     public static AppConfig LoadOrCreate()

@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <AssemblyName>SteamIdlerGUI</AssemblyName>
+    <RootNamespace>SteamGameIdler.GUI</RootNamespace>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Optimize>true</Optimize>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <DebugType>None</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SteamKit2"       Version="3.4.0" />
+    <PackageReference Include="Newtonsoft.Json"  Version="13.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+	<Compile Include="..\Shared\Config.cs" />
+	<Compile Include="..\Shared\SteamAuth.cs" />
+	<Compile Include="..\Shared\GameIdler.cs" />
+  </ItemGroup>
+
+</Project>
