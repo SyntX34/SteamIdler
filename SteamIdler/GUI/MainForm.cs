@@ -4,6 +4,118 @@ using System.Windows.Forms;
 
 namespace SteamGameIdler.GUI;
 
+/*
+ * Authenticator
+ */
+internal sealed class GuiAuthenticator : SteamKit2.Authentication.IAuthenticator
+{
+    private readonly Form _owner;
+    public GuiAuthenticator(Form owner) => _owner = owner;
+
+    public Task<string> GetDeviceCodeAsync(bool previousCodeWasIncorrect)
+    {
+        string prompt = previousCodeWasIncorrect
+            ? "The previous code was incorrect.\n\nEnter your Steam Guard mobile authenticator code:"
+            : "Enter your Steam Guard mobile authenticator code:";
+        return Task.FromResult(ShowInput("Steam Guard — Mobile Authenticator", prompt));
+    }
+
+    public Task<string> GetEmailCodeAsync(string email, bool previousCodeWasIncorrect)
+    {
+        string prompt = previousCodeWasIncorrect
+            ? $"The previous code was incorrect.\n\nEnter the Steam Guard code sent to {email}:"
+            : $"Enter the Steam Guard code sent to {email}:";
+        return Task.FromResult(ShowInput("Steam Guard — Email Code", prompt));
+    }
+
+    public Task<bool> AcceptDeviceConfirmationAsync()
+    {
+        string result = ShowInput(
+            "Steam Guard — Device Confirmation",
+            "Check your Steam mobile app and tap Confirm.\n\nType 'ok' here once you have confirmed, then click OK.");
+        return Task.FromResult(true); // always continue
+    }
+
+    // Run on the UI thread
+    private string ShowInput(string title, string prompt)
+    {
+        string value = "";
+        _owner.Invoke(() =>
+        {
+            using var dlg = new InputDialog(title, prompt);
+            if (dlg.ShowDialog(_owner) == DialogResult.OK)
+                value = dlg.Value;
+        });
+        return value;
+    }
+}
+
+/*
+ * Input Dialog
+ */
+internal sealed class InputDialog : Form
+{
+    public string Value => _txt.Text.Trim();
+    private readonly TextBox _txt;
+
+    public InputDialog(string title, string prompt)
+    {
+        Text = title;
+        Size = new Size(420, 180);
+        MinimumSize = new Size(360, 160);
+        StartPosition = FormStartPosition.CenterParent;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = false; MinimizeBox = false;
+        BackColor = Color.FromArgb(30, 30, 38);
+        ForeColor = Color.FromArgb(210, 210, 210);
+
+        var lbl = new Label
+        {
+            Text = prompt,
+            Location = new Point(12, 12),
+            Size = new Size(380, 60),
+            ForeColor = Color.FromArgb(200, 200, 200)
+        };
+
+        _txt = new TextBox
+        {
+            Location = new Point(12, 80),
+            Size = new Size(380, 24),
+            BackColor = Color.FromArgb(40, 40, 50),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle
+        };
+
+        var ok = new Button
+        {
+            Text = "OK",
+            Location = new Point(210, 112),
+            Size = new Size(88, 28),
+            BackColor = Color.FromArgb(40, 90, 50),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            DialogResult = DialogResult.OK
+        };
+        var cancel = new Button
+        {
+            Text = "Cancel",
+            Location = new Point(306, 112),
+            Size = new Size(88, 28),
+            BackColor = Color.FromArgb(60, 40, 40),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            DialogResult = DialogResult.Cancel
+        };
+
+        Controls.AddRange(new Control[] { lbl, _txt, ok, cancel });
+        AcceptButton = ok;
+        CancelButton = cancel;
+    }
+}
+
+/*
+ * Main FORM
+ */
 public partial class MainForm : Form
 {
     private SteamAuth? _auth;
@@ -37,8 +149,8 @@ public partial class MainForm : Form
     private TextBox txtUsername = null!, txtPassword = null!,
                           txtAutoReply = null!;
     private CheckBox chkAutoReply = null!;
-    private Button btnSaveSettings = null!;
-    private Label lblSaved = null!;
+    private Button btnSaveSettings = null!, btnClearToken = null!;
+    private Label lblSaved = null!, lblTokenStatus = null!;
 
     // Status bar
     private StatusStrip statusBar = null!;
@@ -51,7 +163,7 @@ public partial class MainForm : Form
     }
 
     /*
-     *UI CONSTRUCTION
+     * UI CONSTRUCTION
      */
     private void InitializeComponent()
     {
@@ -104,9 +216,9 @@ public partial class MainForm : Form
         };
         tabs.DrawItem += DrawTab;
 
-        tabStatus = new TabPage("  Dashboard  ") { BackColor = Color.FromArgb(23, 23, 28), ForeColor = Color.FromArgb(220, 220, 220) };
-        tabFriends = new TabPage("  Friends    ") { BackColor = Color.FromArgb(23, 23, 28), ForeColor = Color.FromArgb(220, 220, 220) };
-        tabChat = new TabPage("  Chat       ") { BackColor = Color.FromArgb(23, 23, 28), ForeColor = Color.FromArgb(220, 220, 220) };
+        tabStatus   = new TabPage("  Dashboard  ") { BackColor = Color.FromArgb(23, 23, 28), ForeColor = Color.FromArgb(220, 220, 220) };
+        tabFriends  = new TabPage("  Friends    ") { BackColor = Color.FromArgb(23, 23, 28), ForeColor = Color.FromArgb(220, 220, 220) };
+        tabChat     = new TabPage("  Chat       ") { BackColor = Color.FromArgb(23, 23, 28), ForeColor = Color.FromArgb(220, 220, 220) };
         tabSettings = new TabPage("  Settings   ") { BackColor = Color.FromArgb(23, 23, 28), ForeColor = Color.FromArgb(220, 220, 220) };
 
         tabs.TabPages.AddRange(new[] { tabStatus, tabFriends, tabChat, tabSettings });
@@ -140,15 +252,13 @@ public partial class MainForm : Form
         lblStatus = MakeLabel("● Not connected", 12, 12, 400, 22, Color.FromArgb(200, 80, 80));
         lblStatus.Font = new Font("Segoe UI", 10f, FontStyle.Bold);
 
-        // Buttons
-        btnConnect = MakeDarkButton("Connect & Idle", 12, 42, 130, 34);
-        btnStop = MakeDarkButton("Stop", 152, 42, 80, 34, enabled: false);
+        btnConnect  = MakeDarkButton("Connect & Idle", 12, 42, 130, 34);
+        btnStop     = MakeDarkButton("Stop", 152, 42, 80, 34, enabled: false);
         var btnRefLog = MakeDarkButton("Open Chat Log", 242, 42, 120, 34);
 
         btnConnect.BackColor = Color.FromArgb(40, 90, 50);
-        btnStop.BackColor = Color.FromArgb(90, 40, 40);
+        btnStop.BackColor    = Color.FromArgb(90, 40, 40);
 
-        // Game list
         var lblGames = MakeLabel("Games to idle  (AppIDs):", 12, 90, 220, 18);
         lstGames = new ListBox
         {
@@ -158,10 +268,9 @@ public partial class MainForm : Form
             ForeColor = Color.FromArgb(210, 210, 210),
             BorderStyle = BorderStyle.FixedSingle
         };
-        btnAddGame = MakeDarkButton("+ Add", 12, 320, 105, 28);
+        btnAddGame    = MakeDarkButton("+ Add",    12, 320, 105, 28);
         btnRemoveGame = MakeDarkButton("− Remove", 127, 320, 105, 28);
 
-        // Log box
         var lblLog = MakeLabel("Live Log:", 250, 90, 100, 18);
         logBox = new RichTextBox
         {
@@ -182,16 +291,15 @@ public partial class MainForm : Form
             lblLog, logBox
         });
 
-        // Events
-        btnConnect.Click += OnConnectClick;
-        btnStop.Click += OnStopClick;
-        btnRefLog.Click += (_, _) => OpenChatLog();
-        btnAddGame.Click += OnAddGame;
+        btnConnect.Click    += OnConnectClick;
+        btnStop.Click       += OnStopClick;
+        btnRefLog.Click     += (_, _) => OpenChatLog();
+        btnAddGame.Click    += OnAddGame;
         btnRemoveGame.Click += OnRemoveGame;
     }
 
     /*
-     * Friend's Tab
+     * Friends Tab
      */
     private void BuildFriendsTab()
     {
@@ -218,7 +326,6 @@ public partial class MainForm : Form
         lvFriends.Columns.Add("SteamID64", 180);
         lvFriends.Columns.Add("Status", 100);
 
-        // Double-click a friend.
         lvFriends.DoubleClick += (_, _) =>
         {
             if (lvFriends.SelectedItems.Count == 0) return;
@@ -230,12 +337,11 @@ public partial class MainForm : Form
         var hint = MakeLabel("Double-click a friend to open a chat with them.", 12, 516, 500, 18, Color.FromArgb(120, 120, 120));
 
         p.Controls.AddRange(new Control[] { lbl, btnRefreshFriends, lvFriends, hint });
-
         btnRefreshFriends.Click += (_, _) => RefreshFriendList();
     }
 
     /*
-     * Chat Tabs
+     * Chat Tab
      */
     private void BuildChatTab()
     {
@@ -295,7 +401,7 @@ public partial class MainForm : Form
     }
 
     /*
-     * Settings
+     * Settings Tab
      */
     private void BuildSettingsTab()
     {
@@ -311,72 +417,80 @@ public partial class MainForm : Form
         txtPassword = MakeTextBox(170, 90, 300);
         txtPassword.PasswordChar = '●';
 
+        // Session token status row
+        lblTokenStatus = MakeLabel(
+            HasSavedToken() ? "✓ Saved session token — will log in automatically (no password needed)."
+                            : "No saved token — will prompt for Steam Guard on first login.",
+            12, 128, 600, 20,
+            HasSavedToken() ? Color.FromArgb(80, 200, 120) : Color.FromArgb(160, 160, 160));
+
+        btnClearToken = MakeDarkButton("Clear Saved Token", 12, 154, 160, 28);
+        btnClearToken.BackColor = Color.FromArgb(80, 40, 40);
+        btnClearToken.Enabled   = HasSavedToken();
+
         var sep1 = new Label
         {
-            Location = new Point(12, 132),
-            Size = new Size(780, 1),
+            Location  = new Point(12, 196),
+            Size      = new Size(780, 1),
             BackColor = Color.FromArgb(60, 60, 70)
         };
 
-        var lblAR = MakeLabel("Auto-Reply Settings", 12, 148, 300, 20);
+        var lblAR = MakeLabel("Auto-Reply Settings", 12, 212, 300, 20);
         lblAR.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
 
         chkAutoReply = new CheckBox
         {
-            Location = new Point(12, 176),
-            Size = new Size(200, 22),
-            Text = "Enable auto-reply to friends",
+            Location  = new Point(12, 240),
+            Size      = new Size(250, 22),
+            Text      = "Enable auto-reply to friends",
             ForeColor = Color.FromArgb(210, 210, 210),
             BackColor = Color.Transparent
         };
 
-        var lblARMsg = MakeLabel("Auto-reply message:", 12, 208, 150, 20);
-        txtAutoReply = MakeTextBox(170, 206, 500);
+        var lblARMsg = MakeLabel("Auto-reply message:", 12, 272, 150, 20);
+        txtAutoReply = MakeTextBox(170, 270, 500);
 
         var sep2 = new Label
         {
-            Location = new Point(12, 248),
-            Size = new Size(780, 1),
+            Location  = new Point(12, 312),
+            Size      = new Size(780, 1),
             BackColor = Color.FromArgb(60, 60, 70)
         };
 
-        btnSaveSettings = MakeDarkButton("Save Settings", 12, 264, 140, 34);
+        btnSaveSettings = MakeDarkButton("Save Settings", 12, 328, 140, 34);
         btnSaveSettings.BackColor = Color.FromArgb(40, 90, 50);
-        lblSaved = MakeLabel("", 164, 272, 300, 20, Color.FromArgb(80, 200, 120));
+        lblSaved = MakeLabel("", 164, 336, 300, 20, Color.FromArgb(80, 200, 120));
 
         var note = MakeLabel(
-            "Note: After changing username/password, stop and reconnect for changes to take effect.",
-            12, 314, 700, 18, Color.FromArgb(120, 120, 120));
+            "After changing username/password, stop and reconnect for changes to take effect.",
+            12, 378, 700, 18, Color.FromArgb(120, 120, 120));
 
         p.Controls.AddRange(new Control[] {
             lbl, lblUser, txtUsername, lblPass, txtPassword,
+            lblTokenStatus, btnClearToken,
             sep1, lblAR, chkAutoReply, lblARMsg, txtAutoReply,
             sep2, btnSaveSettings, lblSaved, note
         });
 
         btnSaveSettings.Click += OnSaveSettings;
+        btnClearToken.Click   += OnClearToken;
     }
 
     /*
-     *  EVENTS
+     * EVENTS
      */
     private async void OnConnectClick(object? sender, EventArgs e)
     {
-        if (_auth != null) return; // already connected
+        if (_auth != null) return;
 
         btnConnect.Enabled = false;
         SetStatus("Connecting...", Color.FromArgb(200, 180, 60));
 
-        _cts = new CancellationTokenSource();
-        _auth = new SteamAuth(_config);
+        _cts  = new CancellationTokenSource();
+        _auth = new SteamAuth(_config, new GuiAuthenticator(this));
 
-        // Wire events
-        _auth.OnSystemEvent += msg => AppendLog(msg);
-        _auth.OnChatMessage += (name, msg) =>
-        {
-            var line = $"[{DateTime.Now:HH:mm:ss}] {name}: {msg}";
-            AppendChat(line, incoming: true);
-        };
+        _auth.OnSystemEvent      += msg => AppendLog(msg);
+        _auth.OnChatMessage      += (name, msg) => AppendChat($"[{DateTime.Now:HH:mm:ss}] {name}: {msg}", incoming: true);
         _auth.OnLoggedInElsewhere += () =>
         {
             AppendLog("⚠ Account logged in elsewhere! Auto-reconnecting...");
@@ -408,16 +522,18 @@ public partial class MainForm : Form
             return;
         }
 
+        // Update token status label after successful login
+        UpdateTokenStatusLabel();
+
         SetStatus($"● Connected as {_auth.LoggedInSteamID}", Color.FromArgb(80, 200, 80));
         SetBarRight("Idling");
-        btnStop.Enabled = true;
+        btnStop.Enabled    = true;
         btnConnect.Enabled = false;
 
-        // Load games from games.txt
         var gameIds = LoadGameIds();
         if (gameIds.Count == 0)
         {
-            AppendLog("No AppIDs in games.txt — add some in the list and restart.");
+            AppendLog("No AppIDs in the list — add some using '+ Add' and reconnect.");
             return;
         }
 
@@ -431,9 +547,9 @@ public partial class MainForm : Form
             {
                 SetStatus("● Stopped", Color.FromArgb(200, 80, 80));
                 btnConnect.Enabled = true;
-                btnStop.Enabled = false;
+                btnStop.Enabled    = false;
                 SetBarRight("Idle");
-                _auth = null;
+                _auth  = null;
                 _idler = null;
             });
         });
@@ -456,12 +572,11 @@ public partial class MainForm : Form
             BackColor = Color.FromArgb(30, 30, 38),
             ForeColor = Color.FromArgb(210, 210, 210),
             FormBorderStyle = FormBorderStyle.FixedDialog,
-            MaximizeBox = false,
-            MinimizeBox = false
+            MaximizeBox = false, MinimizeBox = false
         };
-        var lbl = new Label { Text = "Steam AppID:", Location = new Point(12, 16), Size = new Size(120, 20), ForeColor = Color.FromArgb(200, 200, 200) };
+        var lbl = new Label  { Text = "Steam AppID:", Location = new Point(12, 16), Size = new Size(120, 20), ForeColor = Color.FromArgb(200, 200, 200) };
         var txt = new TextBox { Location = new Point(140, 14), Size = new Size(130, 22), BackColor = Color.FromArgb(40, 40, 50), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
-        var ok = new Button { Text = "Add", Location = new Point(105, 52), Size = new Size(80, 28), BackColor = Color.FromArgb(40, 90, 50), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, DialogResult = DialogResult.OK };
+        var ok  = new Button  { Text = "Add", Location = new Point(105, 52), Size = new Size(80, 28), BackColor = Color.FromArgb(40, 90, 50), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, DialogResult = DialogResult.OK };
         dlg.Controls.AddRange(new Control[] { lbl, txt, ok });
         dlg.AcceptButton = ok;
 
@@ -507,8 +622,8 @@ public partial class MainForm : Form
 
     private void OnSaveSettings(object? sender, EventArgs e)
     {
-        _config.Username = txtUsername.Text.Trim();
-        _config.Password = txtPassword.Text;
+        _config.Username         = txtUsername.Text.Trim();
+        _config.Password         = txtPassword.Text;
         _config.AutoReplyEnabled = chkAutoReply.Checked;
         _config.AutoReplyMessage = txtAutoReply.Text.Trim();
         _config.Save();
@@ -519,6 +634,14 @@ public partial class MainForm : Form
         t.Start();
     }
 
+    private void OnClearToken(object? sender, EventArgs e)
+    {
+        _config.RefreshToken = "";
+        _config.Save();
+        UpdateTokenStatusLabel();
+        AppendLog("Saved session token cleared — you will be asked for Steam Guard on next login.");
+    }
+
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
     {
         _cts?.Cancel();
@@ -527,6 +650,19 @@ public partial class MainForm : Form
     /*
      * HELPERS
      */
+    private bool HasSavedToken() => !string.IsNullOrWhiteSpace(_config.RefreshToken);
+
+    private void UpdateTokenStatusLabel()
+    {
+        if (lblTokenStatus.InvokeRequired) { Invoke(UpdateTokenStatusLabel); return; }
+        bool has = HasSavedToken();
+        lblTokenStatus.Text      = has
+            ? "✓ Saved session token — will log in automatically (no password needed)."
+            : "No saved token — will prompt for Steam Guard on next login.";
+        lblTokenStatus.ForeColor = has ? Color.FromArgb(80, 200, 120) : Color.FromArgb(160, 160, 160);
+        btnClearToken.Enabled    = has;
+    }
+
     private void RefreshFriendList()
     {
         lvFriends.Items.Clear();
@@ -571,18 +707,18 @@ public partial class MainForm : Form
 
     private void LoadSettingsIntoUI()
     {
-        txtUsername.Text = _config.Username;
-        txtPassword.Text = _config.Password;
-        chkAutoReply.Checked = _config.AutoReplyEnabled;
-        txtAutoReply.Text = _config.AutoReplyMessage;
+        txtUsername.Text      = _config.Username;
+        txtPassword.Text      = _config.Password;
+        chkAutoReply.Checked  = _config.AutoReplyEnabled;
+        txtAutoReply.Text     = _config.AutoReplyMessage;
     }
 
     private void SetStatus(string text, Color color)
     {
         if (InvokeRequired) { Invoke(() => SetStatus(text, color)); return; }
-        lblStatus.Text = text;
+        lblStatus.Text      = text;
         lblStatus.ForeColor = color;
-        lblBarLeft.Text = text;
+        lblBarLeft.Text     = text;
     }
 
     private void SetBarRight(string text)
@@ -605,8 +741,6 @@ public partial class MainForm : Form
         chatLog.AppendText(msg + "\n");
         chatLog.SelectionColor = chatLog.ForeColor;
         chatLog.ScrollToCaret();
-
-        // save to file.
         try { File.AppendAllText("chat_log.txt", msg + Environment.NewLine); } catch { }
     }
 
@@ -620,31 +754,29 @@ public partial class MainForm : Form
     /*
      * Factory Helpers
      */
-    private static Label MakeLabel(string text, int x, int y, int w, int h,
-        Color? color = null)
+    private static Label MakeLabel(string text, int x, int y, int w, int h, Color? color = null)
     {
         return new Label
         {
-            Text = text,
-            Location = new Point(x, y),
-            Size = new Size(w, h),
+            Text      = text,
+            Location  = new Point(x, y),
+            Size      = new Size(w, h),
             ForeColor = color ?? Color.FromArgb(190, 190, 190),
             BackColor = Color.Transparent
         };
     }
 
-    private static Button MakeDarkButton(string text, int x, int y, int w, int h,
-        bool enabled = true)
+    private static Button MakeDarkButton(string text, int x, int y, int w, int h, bool enabled = true)
     {
         var b = new Button
         {
-            Text = text,
-            Location = new Point(x, y),
-            Size = new Size(w, h),
+            Text      = text,
+            Location  = new Point(x, y),
+            Size      = new Size(w, h),
             BackColor = Color.FromArgb(50, 50, 62),
             ForeColor = Color.FromArgb(210, 210, 210),
             FlatStyle = FlatStyle.Flat,
-            Enabled = enabled
+            Enabled   = enabled
         };
         b.FlatAppearance.BorderColor = Color.FromArgb(70, 70, 85);
         return b;
@@ -654,10 +786,10 @@ public partial class MainForm : Form
     {
         return new TextBox
         {
-            Location = new Point(x, y),
-            Size = new Size(w, 24),
-            BackColor = Color.FromArgb(32, 32, 40),
-            ForeColor = Color.FromArgb(210, 210, 210),
+            Location    = new Point(x, y),
+            Size        = new Size(w, 24),
+            BackColor   = Color.FromArgb(32, 32, 40),
+            ForeColor   = Color.FromArgb(210, 210, 210),
             BorderStyle = BorderStyle.FixedSingle
         };
     }

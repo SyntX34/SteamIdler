@@ -15,7 +15,6 @@ public enum LoginResult
     NetworkError,
     Unknown
 }
-
 internal sealed class ConsoleAuthenticator : IAuthenticator
 {
     public async Task<string> GetDeviceCodeAsync(bool previousCodeWasIncorrect)
@@ -52,50 +51,50 @@ public class SteamAuth
     private SteamFriends? _steamFriends;
 
     private readonly AppConfig _config;
+    private readonly IAuthenticator _authenticator;
 
     private TaskCompletionSource<bool>? _connectTcs;
     private TaskCompletionSource<LoginResult>? _loginTcs;
 
-    // Reconnect state
     private volatile bool _isRunning;
     private volatile bool _intentionalDisconnect;
     private volatile bool _isLoggedIn;
     private CancellationToken _pumpToken;
 
-    // Friends who already got an auto-reply this session
     private readonly HashSet<ulong> _repliedTo = new();
-
-    // Chat log file
     private static readonly string ChatLogPath = "chat_log.txt";
 
-    // Events that other components (GUI, GameIdler) can subscribe to
-    public event Action<string, string>? OnChatMessage;       // (senderName, message)
-    public event Action<string>? OnSystemEvent;       // general status messages
-    public event Action? OnLoggedInElsewhere; // kicked by another device
-    public event Action? OnReconnected;       // fired after successful re-login
+    public event Action<string, string>? OnChatMessage;
+    public event Action<string>? OnSystemEvent;
+    public event Action? OnLoggedInElsewhere;
+    public event Action? OnReconnected;
 
     public SteamID? LoggedInSteamID { get; private set; }
     public bool IsConnected => _steamClient?.IsConnected ?? false;
-    public bool IsLoggedIn => _isLoggedIn;
+    public bool IsLoggedIn  => _isLoggedIn;
 
-    public SteamUser? SteamUser => _steamUser;
-    public SteamApps? SteamApps => _steamApps;
+    public SteamUser?    SteamUser    => _steamUser;
+    public SteamApps?    SteamApps    => _steamApps;
     public SteamFriends? SteamFriends => _steamFriends;
 
-    // CTOR: Consider splitting this class into smaller pieces (e.g. separate SteamClient management from login logic) for better maintainability.
-    public SteamAuth(AppConfig config)
+    /// <summary>
+    /// Pass a custom <see cref="IAuthenticator"/> to handle Steam Guard prompts
+    /// (e.g. a GUI dialog). Defaults to <see cref="ConsoleAuthenticator"/>.
+    /// </summary>
+    public SteamAuth(AppConfig config, IAuthenticator? authenticator = null)
     {
-        _config = config;
+        _config        = config;
+        _authenticator = authenticator ?? new ConsoleAuthenticator();
         InitClient();
     }
 
     private void InitClient()
     {
         _steamClient = new SteamClient();
-        _manager = new CallbackManager(_steamClient);
-        _steamUser = _steamClient.GetHandler<SteamUser>()!;
-        _steamApps = _steamClient.GetHandler<SteamApps>()!;
-        _steamFriends = _steamClient.GetHandler<SteamFriends>()!;
+        _manager     = new CallbackManager(_steamClient);
+        _steamUser   = _steamClient.GetHandler<SteamUser>()!;
+        _steamApps   = _steamClient.GetHandler<SteamApps>()!;
+        _steamFriends= _steamClient.GetHandler<SteamFriends>()!;
         RegisterCallbacks();
     }
 
@@ -143,7 +142,6 @@ public class SteamAuth
     {
         if (_steamClient == null) return false;
 
-        // Try saved refresh token first.
         if (!string.IsNullOrWhiteSpace(_config.RefreshToken))
         {
             Emit("Found saved session token — logging in automatically...");
@@ -167,10 +165,6 @@ public class SteamAuth
         return await DoPasswordLoginAsync(token);
     }
 
-    /// <summary>
-    /// Send a chat message to a friend by their SteamID64.
-    /// Returns false if not connected/logged-in.
-    /// </summary>
     public bool SendMessage(ulong steamId64, string message)
     {
         if (!_isLoggedIn || _steamFriends == null) return false;
@@ -184,9 +178,6 @@ public class SteamAuth
         return true;
     }
 
-    /// <summary>
-    /// Returns a list of friends: (SteamID64, Name, PersonaState).
-    /// </summary>
     public List<(ulong Id, string Name, string State)> GetFriendList()
     {
         var result = new List<(ulong, string, string)>();
@@ -195,8 +186,8 @@ public class SteamAuth
         int count = _steamFriends.GetFriendCount();
         for (int i = 0; i < count; i++)
         {
-            var sid = _steamFriends.GetFriendByIndex(i);
-            var name = _steamFriends.GetFriendPersonaName(sid) ?? sid.ToString();
+            var sid   = _steamFriends.GetFriendByIndex(i);
+            var name  = _steamFriends.GetFriendPersonaName(sid) ?? sid.ToString();
             var state = _steamFriends.GetFriendPersonaState(sid).ToString();
             result.Add((sid.ConvertToUInt64(), name, state));
         }
@@ -206,7 +197,7 @@ public class SteamAuth
     public void Stop()
     {
         _intentionalDisconnect = true;
-        _isRunning = false;
+        _isRunning  = false;
         _isLoggedIn = false;
         _steamUser?.LogOff();
         _steamClient?.Disconnect();
@@ -221,9 +212,9 @@ public class SteamAuth
         _loginTcs = new TaskCompletionSource<LoginResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         _steamUser?.LogOn(new SteamUser.LogOnDetails
         {
-            Username = _config.Username,
+            Username    = _config.Username,
             AccessToken = refreshToken,
-            LoginID = (uint)Random.Shared.Next(1, 999999)
+            LoginID     = (uint)Random.Shared.Next(1, 999999)
         });
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -246,10 +237,10 @@ public class SteamAuth
             var authSession = await _steamClient.Authentication.BeginAuthSessionViaCredentialsAsync(
                 new AuthSessionDetails
                 {
-                    Username = _config.Username,
-                    Password = _config.Password,
-                    IsPersistentSession = true,
-                    Authenticator = new ConsoleAuthenticator()
+                    Username           = _config.Username,
+                    Password           = _config.Password,
+                    IsPersistentSession= true,
+                    Authenticator      = _authenticator   // <-- uses injected authenticator
                 });
 
             var pollResult = await authSession.PollingWaitForResultAsync(token);
@@ -261,9 +252,9 @@ public class SteamAuth
             _loginTcs = new TaskCompletionSource<LoginResult>(TaskCreationOptions.RunContinuationsAsynchronously);
             _steamUser?.LogOn(new SteamUser.LogOnDetails
             {
-                Username = pollResult.AccountName,
+                Username    = pollResult.AccountName,
                 AccessToken = pollResult.RefreshToken,
-                LoginID = (uint)Random.Shared.Next(1, 999999)
+                LoginID     = (uint)Random.Shared.Next(1, 999999)
             });
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -280,14 +271,9 @@ public class SteamAuth
     }
 
     /*
-     * Reconnect logic
+     * Reconnect
      */
 
-    /// <summary>
-    /// Called internally when we get a non-intentional disconnect.
-    /// Waits 5 s, then re-connects and re-logs in using the saved refresh token.
-    /// No user input needed as long as the refresh token is valid (~30 days).
-    /// </summary>
     private void BeginAutoReconnect()
     {
         Task.Run(async () =>
@@ -304,7 +290,7 @@ public class SteamAuth
                 StartCallbackPump(_pumpToken);
 
                 if (!await ConnectAsync(_pumpToken)) continue;
-                if (!await LoginAsync(_pumpToken)) continue;
+                if (!await LoginAsync(_pumpToken))   continue;
 
                 Emit("✓ Reconnected successfully!");
                 OnReconnected?.Invoke();
@@ -342,7 +328,7 @@ public class SteamAuth
     {
         if (cb.Result == EResult.OK)
         {
-            _isLoggedIn = true;
+            _isLoggedIn     = true;
             LoggedInSteamID = cb.ClientSteamID;
             Emit($"✓ Logged on! SteamID: {cb.ClientSteamID}");
             _steamFriends?.SetPersonaState(EPersonaState.Online);
@@ -352,7 +338,6 @@ public class SteamAuth
         {
             Emit($"Login failed: {cb.Result}");
 
-            // If kicked by another device, fire special event
             if (cb.Result == EResult.LoggedInElsewhere)
             {
                 Emit("⚠ Account logged in on another device!");
@@ -361,14 +346,14 @@ public class SteamAuth
 
             var result = cb.Result switch
             {
-                EResult.InvalidPassword => LoginResult.InvalidPassword,
-                EResult.AccountLockedDown => LoginResult.AccountLocked,
-                EResult.AccountLogonDenied => LoginResult.NeedsEmailCode,
-                EResult.AccountLoginDeniedNeedTwoFactor => LoginResult.Needs2FA,
-                EResult.TwoFactorCodeMismatch => LoginResult.Needs2FA,
-                EResult.TwoFactorActivationCodeMismatch => LoginResult.Needs2FA,
-                EResult.InvalidLoginAuthCode => LoginResult.NeedsEmailCode,
-                _ => LoginResult.Unknown
+                EResult.InvalidPassword                    => LoginResult.InvalidPassword,
+                EResult.AccountLockedDown                  => LoginResult.AccountLocked,
+                EResult.AccountLogonDenied                 => LoginResult.NeedsEmailCode,
+                EResult.AccountLoginDeniedNeedTwoFactor    => LoginResult.Needs2FA,
+                EResult.TwoFactorCodeMismatch              => LoginResult.Needs2FA,
+                EResult.TwoFactorActivationCodeMismatch    => LoginResult.Needs2FA,
+                EResult.InvalidLoginAuthCode               => LoginResult.NeedsEmailCode,
+                _                                          => LoginResult.Unknown
             };
             _loginTcs?.TrySetResult(result);
         }
@@ -383,7 +368,6 @@ public class SteamAuth
         {
             Emit("⚠ You were logged in on another device. Attempting to reclaim session...");
             OnLoggedInElsewhere?.Invoke();
-            // Do NOT set intentionalDisconnect, let BeginAutoReconnect handle it
         }
     }
 
@@ -392,14 +376,12 @@ public class SteamAuth
         if (cb.EntryType != EChatEntryType.ChatMsg) return;
         if (string.IsNullOrWhiteSpace(cb.Message)) return;
 
-        var name = _steamFriends?.GetFriendPersonaName(cb.Sender) ?? cb.Sender.ToString();
+        var name     = _steamFriends?.GetFriendPersonaName(cb.Sender) ?? cb.Sender.ToString();
         var friendId = cb.Sender.ConvertToUInt64();
-        var line = $"[{DateTime.Now:HH:mm:ss}] {name} ({friendId}): {cb.Message}";
+        var line     = $"[{DateTime.Now:HH:mm:ss}] {name} ({friendId}): {cb.Message}";
 
         Emit($"[Chat] {line}");
         LogChat(line);
-
-        // Fire event so GUI can update live
         OnChatMessage?.Invoke(name, cb.Message);
 
         if (!_config.AutoReplyEnabled) return;
@@ -417,18 +399,15 @@ public class SteamAuth
     }
 
     /*
-     * Helper
+     * Helpers
      */
 
     private static void LogChat(string line)
     {
         try { File.AppendAllText(ChatLogPath, line + Environment.NewLine); }
-        catch { /* non-fatal */ }
+        catch { }
     }
 
-    /// <summary>
-    /// Write to console AND fire OnSystemEvent (for GUI).
-    /// </summary>
     private void Emit(string msg)
     {
         Console.WriteLine(msg);

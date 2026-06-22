@@ -3,16 +3,28 @@ name: Build & Release
 on:
   push:
     tags:
-      - "v*.*.*"          
-  workflow_dispatch:       
+      - "v*.*.*"
+  workflow_dispatch:
 
 permissions:
-  contents: write          
+  contents: write
 
 jobs:
-  build:
-    name: Build CLI + GUI
-    runs-on: windows-latest   
+  build-cli:
+    name: Build CLI (${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            ext: .exe
+          - os: ubuntu-latest
+            rid: linux-x64
+            ext: ""
+          - os: macos-latest
+            rid: osx-x64
+            ext: ""
 
     steps:
       - name: Checkout repository
@@ -24,39 +36,90 @@ jobs:
           dotnet-version: "8.0.x"
 
       - name: Restore dependencies
+        working-directory: SteamIdler
         run: dotnet restore SteamIdler.sln
 
       - name: Publish CLI
+        working-directory: SteamIdler
+        shell: bash
         run: |
-          dotnet publish SteamIdler/CLI/SteamIdler.csproj `
-          -c Release `
-          -r win-x64 `
-          --self-contained true `
-          -p:PublishSingleFile=true `
-          -p:EnableCompressionInSingleFile=true `
-          -p:DebugType=None `
-          -p:DebugSymbols=false `
-          -o publish/CLI
+          dotnet publish CLI/SteamIdler.csproj \
+            -c Release \
+            -r ${{ matrix.rid }} \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:EnableCompressionInSingleFile=true \
+            -p:DebugType=None \
+            -p:DebugSymbols=false \
+            -o ../publish/CLI/${{ matrix.rid }}
+
+      - name: Rename output
+        shell: bash
+        run: |
+          TAG="${{ github.ref_name }}"
+          SRC="publish/CLI/${{ matrix.rid }}/SteamIdler${{ matrix.ext }}"
+          DST="publish/CLI/${{ matrix.rid }}/SteamIdler-CLI-${TAG}-${{ matrix.rid }}${{ matrix.ext }}"
+          mv "$SRC" "$DST"
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.rid }}
+          path: publish/CLI/${{ matrix.rid }}/SteamIdler-CLI-*
+
+  build-gui:
+    name: Build GUI (win-x64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore dependencies
+        working-directory: SteamIdler
+        run: dotnet restore SteamIdler.sln
 
       - name: Publish GUI
+        working-directory: SteamIdler
         run: |
-          dotnet publish SteamIdler/GUI/SteamIdlerGUI.csproj `
-          -c Release `
-          -r win-x64 `
-          --self-contained true `
-          -p:PublishSingleFile=true `
-          -p:EnableCompressionInSingleFile=true `
-          -p:DebugType=None `
-          -p:DebugSymbols=false `
-          -o publish/GUI
+          dotnet publish GUI/SteamIdlerGUI.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            -o ..\publish\GUI
 
-      - name: Rename outputs
+      - name: Rename output
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"   # e.g. v2.1.0
+          $tag = "${{ github.ref_name }}"
+          Rename-Item "publish\GUI\SteamIdlerGUI.exe" "SteamIdler-GUI-$tag-win-x64.exe"
 
-          Rename-Item "publish/CLI/SteamIdler.exe"    "SteamIdler-CLI-$tag.exe"
-          Rename-Item "publish/GUI/SteamIdlerGUI.exe" "SteamIdler-GUI-$tag.exe"
+      - name: Upload GUI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-win-x64
+          path: publish\GUI\SteamIdler-GUI-*
+
+  release:
+    name: Create Release
+    needs: [build-cli, build-gui]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -65,21 +128,22 @@ jobs:
           body: |
             ## Steam Idler ${{ github.ref_name }}
 
-            | File | Description |
-            |------|-------------|
-            | `SteamIdler-CLI-*.exe` | Console version — lightweight, no UI |
-            | `SteamIdler-GUI-*.exe` | WinForms GUI — dashboard, friends, chat |
+            | File | Platform | Description |
+            |------|----------|-------------|
+            | `SteamIdler-CLI-*-win-x64.exe` | Windows | Console version |
+            | `SteamIdler-CLI-*-linux-x64`   | Linux   | Console version |
+            | `SteamIdler-CLI-*-osx-x64`     | macOS   | Console version |
+            | `SteamIdler-GUI-*-win-x64.exe` | Windows | WinForms GUI    |
 
-            - Both `.exe` files are **self-contained** — no .NET install needed
-            - Drop the exe in a folder, add `config.json` and `games.txt`, run
+            - All files are **self-contained** — no .NET install needed
+            - GUI is Windows-only (WinForms); CLI runs on Windows, Linux, and macOS
 
-            1. Run the exe once — it creates `config.json` and `games.txt`
+            **First run:**
+            1. Run the exe — it creates `config.json` and `games.txt`
             2. Fill in your Steam credentials in `config.json`
             3. Add AppIDs to `games.txt`
-            4. Run again — session token is saved, no auth code needed after that (~30 days)
+            4. Run again — session token is saved for ~30 days
 
           draft: false
           prerelease: false
-          files: |
-            publish/CLI/SteamIdler-CLI-${{ github.ref_name }}.exe
-            publish/GUI/SteamIdler-GUI-${{ github.ref_name }}.exe
+          files: artifacts/**/*
