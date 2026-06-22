@@ -35,9 +35,9 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
-      - name: Restore dependencies
+      - name: Restore CLI
         working-directory: SteamIdler
-        run: dotnet restore SteamIdler.sln
+        run: dotnet restore CLI/SteamIdler.csproj
 
       - name: Publish CLI
         working-directory: SteamIdler
@@ -57,9 +57,8 @@ jobs:
         shell: bash
         run: |
           TAG="${{ github.ref_name }}"
-          SRC="publish/CLI/${{ matrix.rid }}/SteamIdler${{ matrix.ext }}"
-          DST="publish/CLI/${{ matrix.rid }}/SteamIdler-CLI-${TAG}-${{ matrix.rid }}${{ matrix.ext }}"
-          mv "$SRC" "$DST"
+          mv "publish/CLI/${{ matrix.rid }}/SteamIdler${{ matrix.ext }}" \
+             "publish/CLI/${{ matrix.rid }}/SteamIdler-CLI-${TAG}-${{ matrix.rid }}${{ matrix.ext }}"
 
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
@@ -80,9 +79,9 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
-      - name: Restore dependencies
+      - name: Restore GUI
         working-directory: SteamIdler
-        run: dotnet restore SteamIdler.sln
+        run: dotnet restore GUI/SteamIdlerGUI.csproj
 
       - name: Publish GUI
         working-directory: SteamIdler
