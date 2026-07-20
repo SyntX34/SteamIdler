@@ -20,6 +20,12 @@ public class AppConfig
     [JsonProperty("auto_reply_enabled")]
     public bool AutoReplyEnabled { get; set; } = true;
 
+    [JsonProperty("max_idle_hours")]
+    public double MaxIdleHours { get; set; } = 10.0;
+
+    [JsonProperty("cooldown_minutes")]
+    public double CooldownMinutes { get; set; } = 30.0;
+
     private static readonly string _path = "config.json";
 
     public static AppConfig LoadOrCreate()

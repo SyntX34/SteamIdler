@@ -13,7 +13,8 @@ public enum LoginResult
     InvalidPassword,
     AccountLocked,
     NetworkError,
-    Unknown
+    Unknown,
+    SessionExpired
 }
 internal sealed class ConsoleAuthenticator : IAuthenticator
 {
@@ -49,6 +50,7 @@ public class SteamAuth
     private SteamUser? _steamUser;
     private SteamApps? _steamApps;
     private SteamFriends? _steamFriends;
+    private CancellationTokenSource? _pumpCts;
 
     private readonly AppConfig _config;
     private readonly IAuthenticator _authenticator;
@@ -59,7 +61,13 @@ public class SteamAuth
     private volatile bool _isRunning;
     private volatile bool _intentionalDisconnect;
     private volatile bool _isLoggedIn;
-    private CancellationToken _pumpToken;
+    private CancellationToken _appToken;
+    private volatile bool _isReconnecting;
+    private volatile bool _sessionPermanentlyExpired;
+    private int _reconnectAttemptCount;
+    private const int MaxReconnectAttempts = 5;
+    private DateTime _lastDisconnectLog = DateTime.MinValue;
+    private static readonly TimeSpan DisconnectLogThrottle = TimeSpan.FromSeconds(5);
 
     private readonly HashSet<ulong> _repliedTo = new();
     private static readonly string ChatLogPath = "chat_log.txt";
@@ -68,10 +76,12 @@ public class SteamAuth
     public event Action<string>? OnSystemEvent;
     public event Action? OnLoggedInElsewhere;
     public event Action? OnReconnected;
+    public event Action<string>? OnFatalError;
 
     public SteamID? LoggedInSteamID { get; private set; }
     public bool IsConnected => _steamClient?.IsConnected ?? false;
     public bool IsLoggedIn  => _isLoggedIn;
+    public bool IsSessionExpired => _sessionPermanentlyExpired;
 
     public SteamUser?    SteamUser    => _steamUser;
     public SteamApps?    SteamApps    => _steamApps;
@@ -90,12 +100,41 @@ public class SteamAuth
 
     private void InitClient()
     {
+        // Dispose old client & pump before creating new ones
+        CleanupClient();
+
         _steamClient = new SteamClient();
         _manager     = new CallbackManager(_steamClient);
         _steamUser   = _steamClient.GetHandler<SteamUser>()!;
         _steamApps   = _steamClient.GetHandler<SteamApps>()!;
         _steamFriends= _steamClient.GetHandler<SteamFriends>()!;
         RegisterCallbacks();
+    }
+
+    private void CleanupClient()
+    {
+        try
+        {
+            if (_steamClient != null && _steamClient.IsConnected)
+            {
+                _steamClient.Disconnect();
+            }
+        }
+        catch { /* best-effort cleanup */ }
+
+        // Stop the old pump
+        if (_pumpCts != null)
+        {
+            try { _pumpCts.Cancel(); } catch { }
+            _pumpCts.Dispose();
+            _pumpCts = null;
+        }
+
+        _steamClient = null;
+        _manager = null;
+        _steamUser = null;
+        _steamApps = null;
+        _steamFriends = null;
     }
 
     private void RegisterCallbacks()
@@ -116,13 +155,36 @@ public class SteamAuth
 
     public void StartCallbackPump(CancellationToken token)
     {
-        _pumpToken = token;
+        _appToken = token;
         _isRunning = true;
+
+        // Kill any previous pump before starting a new one
+        if (_pumpCts != null)
+        {
+            try { _pumpCts.Cancel(); } catch { }
+            _pumpCts.Dispose();
+        }
+
+        _pumpCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+
         Task.Run(() =>
         {
-            while (_isRunning && !token.IsCancellationRequested)
-                _manager?.RunWaitCallbacks(TimeSpan.FromMilliseconds(100));
-        }, token);
+            while (_isRunning && !_pumpCts.IsCancellationRequested)
+            {
+                try
+                {
+                    _manager?.RunWaitCallbacks(TimeSpan.FromMilliseconds(100));
+                }
+                catch (ObjectDisposedException)
+                {
+                    break;
+                }
+                catch (Exception)
+                {
+                    // Swallow pump-level exceptions to keep the loop alive
+                }
+            }
+        }, _pumpCts.Token);
     }
 
     public async Task<bool> ConnectAsync(CancellationToken token = default)
@@ -142,7 +204,8 @@ public class SteamAuth
     {
         if (_steamClient == null) return false;
 
-        if (!string.IsNullOrWhiteSpace(_config.RefreshToken))
+        // If we already know the session is permanently expired, skip token login
+        if (!_sessionPermanentlyExpired && !string.IsNullOrWhiteSpace(_config.RefreshToken))
         {
             Emit("Found saved session token — logging in automatically...");
             try
@@ -158,11 +221,16 @@ public class SteamAuth
             {
                 Emit($"Token login failed ({ex.Message}) — falling back to password login.");
             }
-            _config.RefreshToken = "";
-            _config.Save();
         }
 
-        return await DoPasswordLoginAsync(token);
+        // If token login failed and we have credentials, try password login
+        if (!string.IsNullOrWhiteSpace(_config.Username) && !string.IsNullOrWhiteSpace(_config.Password))
+        {
+            return await DoPasswordLoginAsync(token);
+        }
+
+        Emit("✗ No credentials available to log in.");
+        return false;
     }
 
     public bool SendMessage(ulong steamId64, string message)
@@ -199,8 +267,17 @@ public class SteamAuth
         _intentionalDisconnect = true;
         _isRunning  = false;
         _isLoggedIn = false;
-        _steamUser?.LogOff();
-        _steamClient?.Disconnect();
+        _sessionPermanentlyExpired = false;
+        _isReconnecting = false;
+        _reconnectAttemptCount = 0;
+
+        try
+        {
+            _steamUser?.LogOff();
+        }
+        catch { }
+
+        CleanupClient();
     }
 
     /*
@@ -222,9 +299,20 @@ public class SteamAuth
         try
         {
             var r = await _loginTcs.Task.WaitAsync(cts.Token);
-            return r == LoginResult.Success;
+            if (r == LoginResult.Success)
+                return true;
+
+            // If the token was explicitly rejected, mark as expired
+            if (r == LoginResult.InvalidPassword || r == LoginResult.SessionExpired || r == LoginResult.Unknown)
+            {
+                _sessionPermanentlyExpired = true;
+            }
+            return false;
         }
-        catch { return false; }
+        catch
+        {
+            return false;
+        }
     }
 
     private async Task<bool> DoPasswordLoginAsync(CancellationToken token)
@@ -240,14 +328,17 @@ public class SteamAuth
                     Username           = _config.Username,
                     Password           = _config.Password,
                     IsPersistentSession= true,
-                    Authenticator      = _authenticator   // <-- uses injected authenticator
+                    Authenticator      = _authenticator
                 });
 
             var pollResult = await authSession.PollingWaitForResultAsync(token);
 
             _config.RefreshToken = pollResult.RefreshToken;
             _config.Save();
-            Emit("✓ Session token saved — you won't need to enter an auth code again for ~1 month.");
+            Emit("✓ Session token saved — won't need an auth code again for a long time.");
+
+            // Reset session expired flag since we just got a fresh token
+            _sessionPermanentlyExpired = false;
 
             _loginTcs = new TaskCompletionSource<LoginResult>(TaskCreationOptions.RunContinuationsAsynchronously);
             _steamUser?.LogOn(new SteamUser.LogOnDetails
@@ -271,30 +362,92 @@ public class SteamAuth
     }
 
     /*
-     * Reconnect
+     * Reconnect - completely rewritten to prevent memory/CPU leaks
      */
 
     private void BeginAutoReconnect()
     {
+        // Prevent multiple concurrent reconnect loops
+        if (_isReconnecting)
+        {
+            EmitThrottled("Reconnect already in progress — skipping duplicate.");
+            return;
+        }
+
+        // If session is permanently expired, don't keep retrying
+        if (_sessionPermanentlyExpired)
+        {
+            Emit("✗ Session token is permanently expired. Automatic reconnection is not possible.");
+            Emit("  Please restart the application and re-enter your credentials.");
+            OnFatalError?.Invoke("Session expired permanently. Please restart and re-authenticate.");
+            return;
+        }
+
+        _isReconnecting = true;
+
         Task.Run(async () =>
         {
-            for (int attempt = 1; _isRunning && !_pumpToken.IsCancellationRequested; attempt++)
+            try
             {
-                int delaySec = Math.Min(30, 5 * attempt);
-                Emit($"Reconnect attempt {attempt} in {delaySec}s...");
-                await Task.Delay(TimeSpan.FromSeconds(delaySec), _pumpToken).ContinueWith(_ => { });
+                while (_isRunning && !_appToken.IsCancellationRequested && !_sessionPermanentlyExpired)
+                {
+                    if (_reconnectAttemptCount >= MaxReconnectAttempts)
+                    {
+                        Emit($"✗ Maximum reconnection attempts ({MaxReconnectAttempts}) reached. Giving up.");
+                        Emit("  Please restart the application to try again.");
+                        OnFatalError?.Invoke($"Could not reconnect after {MaxReconnectAttempts} attempts. Please restart.");
+                        return;
+                    }
 
-                if (!_isRunning || _pumpToken.IsCancellationRequested) break;
+                    _reconnectAttemptCount++;
 
-                InitClient();
-                StartCallbackPump(_pumpToken);
+                    // Exponential backoff: 5s, 10s, 20s, 40s, 80s (capped at 60s)
+                    int delaySec = Math.Min(60, (int)Math.Pow(2, _reconnectAttemptCount) * 5 / 2);
+                    Emit($"Reconnect attempt {_reconnectAttemptCount}/{MaxReconnectAttempts} in {delaySec}s...");
+                    await Task.Delay(TimeSpan.FromSeconds(delaySec), _appToken).ContinueWith(_ => { });
 
-                if (!await ConnectAsync(_pumpToken)) continue;
-                if (!await LoginAsync(_pumpToken))   continue;
+                    if (!_isRunning || _appToken.IsCancellationRequested || _sessionPermanentlyExpired) break;
 
-                Emit("✓ Reconnected successfully!");
-                OnReconnected?.Invoke();
-                return;
+                    // Cleanup old client and create fresh one (critical to prevent memory leak)
+                    InitClient();
+                    StartCallbackPump(_appToken);
+
+                    if (!await ConnectAsync(_appToken))
+                    {
+                        Emit("  Connection failed — will retry.");
+                        continue;
+                    }
+
+                    if (!await LoginAsync(_appToken))
+                    {
+                        Emit("  Login failed — will retry.");
+
+                        // If the session died permanently during login, stop retrying
+                        if (_sessionPermanentlyExpired)
+                        {
+                            Emit("  Token expired permanently. Stop reconnecting.");
+                            OnFatalError?.Invoke("Session expired permanently. Please restart and re-authenticate.");
+                            return;
+                        }
+                        continue;
+                    }
+
+                    // Success!
+                    Emit("✓ Reconnected successfully!");
+                    _reconnectAttemptCount = 0;
+                    _isReconnecting = false;
+                    OnReconnected?.Invoke();
+                    return;
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                Emit($"Reconnect error: {ex.Message}");
+            }
+            finally
+            {
+                _isReconnecting = false;
             }
         });
     }
@@ -305,14 +458,14 @@ public class SteamAuth
 
     private void OnConnected(SteamClient.ConnectedCallback _)
     {
-        Emit("✓ Connected to Steam network");
+        EmitThrottled("✓ Connected to Steam network");
         _connectTcs?.TrySetResult(true);
     }
 
     private void OnDisconnected(SteamClient.DisconnectedCallback _)
     {
         _isLoggedIn = false;
-        Emit("Disconnected from Steam.");
+        EmitThrottled("Disconnected from Steam.");
 
         if (_intentionalDisconnect)
         {
@@ -330,6 +483,7 @@ public class SteamAuth
         {
             _isLoggedIn     = true;
             LoggedInSteamID = cb.ClientSteamID;
+            _sessionPermanentlyExpired = false; // we're logged in, so session is fine
             Emit($"✓ Logged on! SteamID: {cb.ClientSteamID}");
             _steamFriends?.SetPersonaState(EPersonaState.Online);
             _loginTcs?.TrySetResult(LoginResult.Success);
@@ -344,6 +498,18 @@ public class SteamAuth
                 OnLoggedInElsewhere?.Invoke();
             }
 
+            // Detect expired/revoked session tokens
+            if (cb.Result == EResult.InvalidPassword ||
+                cb.Result == EResult.InvalidLoginAuthCode ||
+                cb.Result == EResult.AccountLogonDenied ||
+                cb.Result == EResult.AccountLoginDeniedNeedTwoFactor ||
+                cb.Result == EResult.TwoFactorCodeMismatch ||
+                cb.Result == EResult.TwoFactorActivationCodeMismatch ||
+                cb.Result == EResult.AccessDenied)
+            {
+                _sessionPermanentlyExpired = true;
+            }
+
             var result = cb.Result switch
             {
                 EResult.InvalidPassword                    => LoginResult.InvalidPassword,
@@ -353,6 +519,7 @@ public class SteamAuth
                 EResult.TwoFactorCodeMismatch              => LoginResult.Needs2FA,
                 EResult.TwoFactorActivationCodeMismatch    => LoginResult.Needs2FA,
                 EResult.InvalidLoginAuthCode               => LoginResult.NeedsEmailCode,
+                EResult.AccessDenied                       => LoginResult.SessionExpired,
                 _                                          => LoginResult.Unknown
             };
             _loginTcs?.TrySetResult(result);
@@ -368,6 +535,14 @@ public class SteamAuth
         {
             Emit("⚠ You were logged in on another device. Attempting to reclaim session...");
             OnLoggedInElsewhere?.Invoke();
+        }
+
+        // If logged off due to expired/revoked token, mark session as dead
+        if (cb.Result == EResult.InvalidPassword ||
+            cb.Result == EResult.AccessDenied ||
+            cb.Result == EResult.InvalidLoginAuthCode)
+        {
+            _sessionPermanentlyExpired = true;
         }
     }
 
@@ -406,6 +581,16 @@ public class SteamAuth
     {
         try { File.AppendAllText(ChatLogPath, line + Environment.NewLine); }
         catch { }
+    }
+
+    /// <summary>Throttle repeated messages to avoid spamming the log (and eating memory).</summary>
+    private void EmitThrottled(string msg)
+    {
+        var now = DateTime.Now;
+        if ((now - _lastDisconnectLog) < DisconnectLogThrottle)
+            return;
+        _lastDisconnectLog = now;
+        Emit(msg);
     }
 
     private void Emit(string msg)

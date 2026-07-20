@@ -146,7 +146,7 @@ class Program
         // ------------------------------------------------------------------
         // Start idling
         // ------------------------------------------------------------------
-        _gameIdler = new GameIdler(_steamAuth);
+        _gameIdler = new GameIdler(_steamAuth, config);
         await _gameIdler.StartIdling(gameIds, token);
     }
 

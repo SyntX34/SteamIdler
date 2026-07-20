@@ -167,7 +167,7 @@ public partial class MainForm : Form
      */
     private void InitializeComponent()
     {
-        Text = "Steam Game Idler v2.1  — by SyntX";
+        Text = "Steam Game Idler v2.2 -- by SyntX";
         Size = new Size(860, 620);
         MinimumSize = new Size(760, 520);
         StartPosition = FormStartPosition.CenterScreen;
@@ -537,7 +537,7 @@ public partial class MainForm : Form
             return;
         }
 
-        _idler = new GameIdler(_auth);
+        _idler = new GameIdler(_auth, _config);
         _idler.OnStatusUpdate += msg => AppendLog(msg);
 
         _ = Task.Run(async () =>

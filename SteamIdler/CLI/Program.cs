@@ -16,7 +16,7 @@ class Program
 
         Console.WriteLine(@"
 ╔═══════════════════════════════════════════╗
-║         Steam Game Idler v2.1             ║
+║         Steam Game Idler v2.2             ║
 ║          Author: SyntX                    ║
 ║     Automatically idle Steam games        ║
 ╚═══════════════════════════════════════════╝
@@ -146,7 +146,7 @@ class Program
         // ------------------------------------------------------------------
         // Start idling
         // ------------------------------------------------------------------
-        _gameIdler = new GameIdler(_steamAuth);
+        _gameIdler = new GameIdler(_steamAuth, config);
         await _gameIdler.StartIdling(gameIds, token);
     }
 

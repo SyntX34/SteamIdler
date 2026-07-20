@@ -5,8 +5,11 @@ namespace SteamGameIdler.Shared;
 public class GameIdler
 {
     private readonly SteamAuth _steamAuth;
+    private readonly AppConfig _config;
     private readonly Dictionary<uint, DateTime> _gameStartTimes = new();
     private volatile bool _isIdling;
+    private DateTime _cooldownUntil = DateTime.MinValue;
+    private double _totalIdleHoursThisSession;
 
     // Games currently being played
     // so we can re-set them after a reconnect
@@ -14,15 +17,16 @@ public class GameIdler
 
     public event Action<string>? OnStatusUpdate;
 
-    public GameIdler(SteamAuth steamAuth)
+    public GameIdler(SteamAuth steamAuth, AppConfig config)
     {
         _steamAuth = steamAuth;
+        _config = config;
 
         // When SteamAuth reconnects automatically
         // re-set the games playing
         _steamAuth.OnReconnected += () =>
         {
-            if (_isIdling && _currentGameIds.Count > 0)
+            if (_isIdling && _currentGameIds.Count > 0 && DateTime.Now >= _cooldownUntil)
             {
                 Emit("Re-setting games after reconnect...");
                 SetPlayingGames(_currentGameIds);
@@ -37,10 +41,15 @@ public class GameIdler
 
         _isIdling = true;
         _currentGameIds = gameIds;
+        _totalIdleHoursThisSession = 0;
+        _cooldownUntil = DateTime.MinValue;
 
         Emit($"Starting to idle {gameIds.Count} game(s) simultaneously...");
-        Emit("Press Ctrl+C to stop\n");
 
+        double maxHours = _config.MaxIdleHours;
+        Emit($"Max idle time: {maxHours}h before {_config.CooldownMinutes}min cooldown\n");
+
+        var sessionStart = DateTime.Now;
         foreach (var id in gameIds)
             _gameStartTimes[id] = DateTime.Now;
 
@@ -54,8 +63,36 @@ public class GameIdler
 
         try
         {
-            while (_isIdling && !token.IsCancellationRequested)
+            while (_isIdling && !token.IsCancellationRequested && !_steamAuth.IsSessionExpired)
             {
+                /*
+                 * Cooldown check
+                */
+                if (_cooldownUntil > DateTime.Now)
+                {
+                    var remaining = _cooldownUntil - DateTime.Now;
+                    Emit($"⏳ Cooldown active — {remaining.Minutes:D2}m {remaining.Seconds:D2}s remaining");
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(30), token);
+                    }
+                    catch (OperationCanceledException) { break; }
+                    continue;
+                }
+
+                // When cooldown ends, resume idling
+                if (_cooldownUntil != DateTime.MinValue && DateTime.Now >= _cooldownUntil)
+                {
+                    Emit("\n✓ Cooldown period over — resuming idle!");
+                    _cooldownUntil = DateTime.MinValue;
+                    _totalIdleHoursThisSession = 0;
+                    sessionStart = DateTime.Now;
+                    foreach (var id in gameIds)
+                        _gameStartTimes[id] = DateTime.Now;
+                    SetPlayingGames(gameIds);
+                    await ShowAchievementsAsync(gameIds);
+                }
+
                 // Display stats every hour
                 if ((DateTime.Now - statsTimer).TotalHours >= 1)
                 {
@@ -68,6 +105,22 @@ public class GameIdler
                 {
                     await ShowAchievementsAsync(gameIds);
                     achTimer = DateTime.Now;
+                }
+
+                /*
+                 * Check:
+                 * if we've hit max idle hours 
+                */
+                _totalIdleHoursThisSession = (DateTime.Now - sessionStart).TotalHours;
+                if (_totalIdleHoursThisSession >= maxHours)
+                {
+                    double cooldownMin = _config.CooldownMinutes;
+                    Emit($"\n⚠ Reached maximum idle time ({maxHours:F1}h). Starting {cooldownMin}min cooldown...");
+                    StopAllGames();
+                    _cooldownUntil = DateTime.Now.AddMinutes(cooldownMin);
+                    Emit($"Cooldown ends at: {_cooldownUntil:HH:mm:ss}\n");
+                    DisplayStats();
+                    continue;
                 }
 
                 await Task.Delay(TimeSpan.FromSeconds(30), token);

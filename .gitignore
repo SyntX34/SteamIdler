@@ -1,2 +1,14 @@
 .vs
 .vs/*
+.*cache
+*.obj
+.vscode
+.vscode/*
+nul
+NUL
+build/*
+bin/*
+CLI/bin/*
+GUI/bin/*
+CLI/obj/*
+GUI/obj/*
