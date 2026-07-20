@@ -8,6 +8,7 @@ class Program
     private static SteamAuth? _steamAuth;
     private static GameIdler? _gameIdler;
     private static CancellationTokenSource? _cts;
+    private static bool _shutdownInitiated;
 
     static async Task Main(string[] args)
     {
@@ -16,7 +17,7 @@ class Program
 
         Console.WriteLine(@"
 ╔═══════════════════════════════════════════╗
-║         Steam Game Idler v2.1             ║
+║         Steam Game Idler v2.2             ║
 ║          Author: SyntX                    ║
 ║     Automatically idle Steam games        ║
 ╚═══════════════════════════════════════════╝
@@ -25,9 +26,16 @@ class Program
         _cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) =>
         {
+            if (_shutdownInitiated)
+            {
+                // Second Ctrl+C — force immediate exit
+                Environment.Exit(0);
+            }
+
+            _shutdownInitiated = true;
             e.Cancel = true;
             _cts?.Cancel();
-            Console.WriteLine("\n\nShutting down gracefully...");
+            Console.WriteLine("\n\nShutting down gracefully... (press Ctrl+C again to force)");
         };
 
         try
@@ -45,8 +53,12 @@ class Program
         }
         finally
         {
-            Console.WriteLine("\nPress any key to exit...");
-            Console.ReadKey();
+            // Brief pause so user can read final messages, then auto-exit
+            if (_shutdownInitiated)
+                await Task.Delay(1500);
+            else
+                for (int i = 0; i < 6; i++)
+                    await Task.Delay(500);
         }
     }
 
@@ -163,6 +175,7 @@ class Program
 
             if (input.Equals("quit", StringComparison.OrdinalIgnoreCase))
             {
+                _shutdownInitiated = true;
                 _cts?.Cancel();
                 return;
             }
